@@ -1,38 +1,52 @@
 import os
 import glob
+import cv2
+import pikepdf as pk
+import pytesseract as pt
+import numpy as np
+from io import BytesIO
 from PIL import Image
 from pdf2image import convert_from_path
+from PyPDF2 import PdfMerger
 import pandas as pd
 import pytesseract as pt
 years = ['1955','1957','1958','1959','1960','1961','1962','1963','1964','1965','1966','1967','1968']
 
+def enhance_image(img) -> Image:
+    img = img.convert('RGB') #ensure image is in RGB mode
+    img = np.array(img) #convert PIL image to numpy array
+    img = cv2.resize(img, None, fx=1.5, fy=1.5, interpolation=cv2.INTER_CUBIC) #resize image to improve ocr accuracy
+    img = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY) #convert to grayscale
+    img = cv2.GaussianBlur(img, (5, 5), 0) #apply gaussian blur to reduce noise
+    img = cv2.adaptiveThreshold(img, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2) #apply adaptive thresholding to enhance text
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 1))
+    img = cv2.morphologyEx(img[1], cv2.MORPH_OPEN, kernel) #apply morphological operations to enhance text
+    img = cv2.morphologyEx(img, cv2.MORPH_OPEN, kernel) #apply morphological operations to enhance text
+    img = Image.fromarray(img.astype('uint8')) #convert back to PIL image
+    return img
+
 def to_csv(mayor_doc, tax_doc, counter):
-    # Extract text from images using OCR
-    mayor_text = ''
-    tax_text = ''
+    merger = PdfMerger()
     for img in mayor_doc:
         img = img.rotate(270, expand=True)
-        mayor_text += pt.image_to_string(img)
+        img = enhance_image(img) #improve image quality for ocr
+        searchable_mayors = pt.image_to_pdf_or_hocr(img, extension='pdf')
+        buf = BytesIO(searchable_mayors)
+        buf.seek(0)
+        merger.append(buf)
     for img in tax_doc:
-        img = img.rotate(270, expand=True)
-        tax_text += pt.image_to_string(img)
+        if counter < 12: #for years before 1967, rotate tax images to be upright
+            img = img.rotate(270, expand=True)
+        img = enhance_image(img) #improve image quality for ocr
+        searchable_taxes = pt.image_to_pdf_or_hocr(img, extension='pdf')
+        buf = BytesIO(searchable_taxes)
+        buf.seek(0)
+        merger.append(buf)
 
-    # Process mayor's document text
-    mayor_lines = mayor_text.split('\n')
-    mayor_data = [line.split() for line in mayor_lines if line.strip()]
-
-    # Process tax document text
-    tax_lines = tax_text.split('\n')
-    tax_data = [line.split() for line in tax_lines if line.strip()]
-
-    # Convert to DataFrames
-    mayor_df = pd.DataFrame(mayor_data[1:])
-    tax_df = pd.DataFrame(tax_data[1:])
-
-    # Save to CSV files
-    mayor_df.to_csv('mayor_data' + years[counter] + '.csv', index=False)
-    tax_df.to_csv('tax_data' + years[counter] + '.csv', index=False)
-
+    merger.write(f'ocr_rms_{years[counter]}.pdf')
+    merger.close()
+    with pk.open('ocr_rms_{years[counter]}.pdf') as pdf:
+        pdf.save('ocr_rms_{years[counter]}.pdf', optimize_image=True)
 
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
